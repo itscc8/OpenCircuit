@@ -23,7 +23,6 @@
         width: 100vw;
         height: 100vh;
         overflow: hidden;
-        background-color: #0f0f0f;
       }
 
       canvas {
@@ -39,18 +38,15 @@
         flex-direction: column;
         gap: 8px;
         padding: 12px;
-        background: rgba(20, 20, 20, 0.9);
         border: 1px solid #333;
         border-radius: 6px;
         backdrop-filter: blur(8px);
         width: 140px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
         z-index: 10;
-        max-height: 80vh; /* Limited height to force scroll if needed */
+        max-height: 80vh;
         overflow-y: auto;
       }
 
-      /* Custom Scrollbar for HUD */
       .hud::-webkit-scrollbar {
         width: 4px;
       }
@@ -64,7 +60,7 @@
 
       button {
         padding: 10px;
-        background: #1a1a1a;
+        background: #000;
         border: 1px solid #333;
         border-radius: 4px;
         color: #ccc;
@@ -83,11 +79,9 @@
         border-color: #444;
         color: #fff;
       }
-
       button:active {
         background: #333;
       }
-
       button.danger {
         border-color: #522;
         color: #e55;
@@ -102,29 +96,12 @@
         border-radius: 2px;
         display: inline-block;
       }
-
-      .controls {
-        position: absolute;
-        bottom: 15px;
-        right: 15px;
-        color: #444;
-        font-size: 11px;
-        text-align: right;
-        pointer-events: none;
-        line-height: 1.6;
-      }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
 
     <div class="hud" id="hud"></div>
-
-    <div class="controls">
-      Protected: Can't place components on wires<br />
-      Auto-Bridge: Gaps fill automatically<br />
-      IN: Click Center to Toggle
-    </div>
 
     <script>
       const canvas = document.getElementById('canvas')
@@ -139,11 +116,11 @@
         OUTPUT: { label: 'OUT', color: '#22c55e', w: 2, h: 2, ins: 1, outs: 0 },
         NOT: { label: 'NOT', color: '#ef4444', w: 2, h: 2, ins: 1, outs: 1 },
         AND: { label: 'AND', color: '#eab308', w: 2, h: 2, ins: 2, outs: 1 },
-        NAND: { label: 'NAND', color: '#14b8a6', w: 2, h: 2, ins: 2, outs: 1 }, // Teal
+        NAND: { label: 'NAND', color: '#14b8a6', w: 2, h: 2, ins: 2, outs: 1 },
         OR: { label: 'OR', color: '#a855f7', w: 2, h: 2, ins: 2, outs: 1 },
-        NOR: { label: 'NOR', color: '#f97316', w: 2, h: 2, ins: 2, outs: 1 }, // Orange
+        NOR: { label: 'NOR', color: '#f97316', w: 2, h: 2, ins: 2, outs: 1 },
         XOR: { label: 'XOR', color: '#ec4899', w: 2, h: 2, ins: 2, outs: 1 },
-        XNOR: { label: 'XNOR', color: '#6366f1', w: 2, h: 2, ins: 2, outs: 1 }, // Indigo
+        XNOR: { label: 'XNOR', color: '#6366f1', w: 2, h: 2, ins: 2, outs: 1 },
       }
 
       let components = []
@@ -167,103 +144,169 @@
           this.type = type
           this.id = Math.random().toString(36).substr(2, 9)
           this.state = false
+          this.isLit = false
         }
       }
 
       function simulate() {
         let currentState = new Map()
+        let queue = []
+        let visited = new Set()
 
-        for (let pass = 0; pass < 3; pass++) {
-          let nextState = new Map()
-          let queue = []
-          let visited = new Set()
+        components.forEach((c) => {
+          const def = TOOLS[c.type]
+          let isActive = false
 
-          components.forEach((c) => {
-            const def = TOOLS[c.type]
-            let isActive = false
+          if (c.type === 'INPUT') {
+            isActive = c.state
+          } else if (c.type !== 'WIRE') {
+            const in1 = currentState.get(`${c.gx - 1},${c.gy}`) || false
+            const in2 = currentState.get(`${c.gx - 1},${c.gy + 1}`) || false
 
-            if (c.type === 'INPUT') {
-              isActive = c.state
-            } else if (
-              ['AND', 'OR', 'NOT', 'XOR', 'NAND', 'NOR', 'XNOR'].includes(
-                c.type
-              )
-            ) {
-              // Logic Inputs (Direct or Bridged)
-              const in1_Direct =
-                currentState.get(`${c.gx - 1},${c.gy}`) || false
-              const in1_Gap = currentState.get(`${c.gx - 2},${c.gy}`) || false
-              const in1 = in1_Direct || in1_Gap
-
-              const in2_Direct =
-                currentState.get(`${c.gx - 1},${c.gy + 1}`) || false
-              const in2_Gap =
-                currentState.get(`${c.gx - 2},${c.gy + 1}`) || false
-              const in2 = in2_Direct || in2_Gap
-
-              if (c.type === 'NOT') isActive = !in1
-              if (c.type === 'AND') isActive = in1 && in2
-              if (c.type === 'NAND') isActive = !(in1 && in2)
-              if (c.type === 'OR') isActive = in1 || in2
-              if (c.type === 'NOR') isActive = !(in1 || in2)
-              if (c.type === 'XOR') isActive = !!in1 !== !!in2
-              if (c.type === 'XNOR') isActive = !!in1 === !!in2
+            if (c.type === 'OUTPUT') {
+              c.isLit = in1
+              return
             }
 
-            if (isActive) {
-              queue.push({ x: c.gx + def.w, y: c.gy })
-              queue.push({ x: c.gx + def.w + 1, y: c.gy })
-            }
-          })
+            if (c.type === 'NOT') isActive = !in1
+            if (c.type === 'AND') isActive = in1 && in2
+            if (c.type === 'NAND') isActive = !(in1 && in2)
+            if (c.type === 'OR') isActive = in1 || in2
+            if (c.type === 'NOR') isActive = !(in1 || in2)
+            if (c.type === 'XOR') isActive = !!in1 !== !!in2
+            if (c.type === 'XNOR') isActive = !!in1 === !!in2
+          }
 
-          while (queue.length > 0) {
-            const curr = queue.shift()
-            const key = `${curr.x},${curr.y}`
-
-            if (visited.has(key)) continue
-            visited.add(key)
-
-            if (wires.has(key)) {
-              nextState.set(key, true)
-
-              const neighbors = [
-                { x: curr.x + 1, y: curr.y },
-                { x: curr.x - 1, y: curr.y },
-                { x: curr.x, y: curr.y + 1 },
-                { x: curr.x, y: curr.y - 1 },
-              ]
-
-              neighbors.forEach((n) => {
-                if (
-                  wires.has(`${n.x},${n.y}`) &&
-                  canConnect(curr.x, curr.y, n.x, n.y)
-                ) {
-                  queue.push(n)
-                }
-              })
+          if (isActive) {
+            const outX = c.gx + def.w
+            const outY = c.gy
+            const key = `${outX},${outY}`
+            if (!currentState.has(key)) {
+              currentState.set(key, true)
+              queue.push({ x: outX, y: outY })
             }
           }
-          currentState = nextState
+        })
+
+        while (queue.length > 0) {
+          const curr = queue.shift()
+          const key = `${curr.x},${curr.y}`
+
+          if (visited.has(key)) continue
+          visited.add(key)
+
+          const neighbors = [
+            { x: curr.x + 1, y: curr.y },
+            { x: curr.x - 1, y: curr.y },
+            { x: curr.x, y: curr.y + 1 },
+            { x: curr.x, y: curr.y - 1 },
+          ]
+
+          neighbors.forEach((n) => {
+            const nKey = `${n.x},${n.y}`
+            if (isConductive(n.x, n.y)) {
+              if (!currentState.has(nKey)) {
+                currentState.set(nKey, true)
+                queue.push(n)
+              }
+            }
+          })
         }
+
+        components.forEach((c) => {
+          if (c.type === 'OUTPUT') {
+            c.isLit = currentState.get(`${c.gx - 1},${c.gy}`) || false
+          }
+        })
+
         wireStates = currentState
       }
 
-      function isInputPort(gx, gy) {
+      function isConductive(gx, gy) {
+        if (wires.has(`${gx},${gy}`)) return true
         return components.some((c) => {
           const def = TOOLS[c.type]
-          return gx === c.gx && gy >= c.gy && gy < c.gy + def.ins
+          if (def.ins >= 1 && gx === c.gx - 1 && gy === c.gy) return true
+          if (def.ins >= 2 && gx === c.gx - 1 && gy === c.gy + 1) return true
+          if (def.outs >= 1 && gx === c.gx + def.w && gy === c.gy) return true
+          return false
         })
       }
 
-      function canConnect(x1, y1, x2, y2) {
-        if (x1 === x2 && Math.abs(y1 - y2) === 1) {
-          const rightX = x1 + 1
-          const topY = Math.min(y1, y2)
-          if (isInputPort(rightX, topY) && isInputPort(rightX, topY + 1)) {
+      function shouldConnect(x1, y1, x2, y2) {
+        const hasWire1 = wires.has(`${x1},${y1}`)
+        const hasWire2 = wires.has(`${x2},${y2}`)
+
+        if (x1 === x2 && y1 === y2) return true
+
+        // TBD Because it looks weird sometimes
+        if (!hasWire1 && !hasWire2) return false
+
+        return isConductive(x1, y1) && isConductive(x2, y2)
+      }
+
+      function checkCollision(gx, gy, type, excludeId = null) {
+        const def = TOOLS[type]
+
+        const bodyCollision = components.some((c) => {
+          if (c.id === excludeId) return false
+          const cDef = TOOLS[c.type]
+          return (
+            gx < c.gx + cDef.w &&
+            gx + def.w > c.gx &&
+            gy < c.gy + cDef.h &&
+            gy + def.h > c.gy
+          )
+        })
+        if (bodyCollision) return true
+
+        if (type !== 'WIRE') {
+          if (def.ins > 0) {
+            if (isBodyAt(gx - 1, gy, excludeId)) return true
+            if (def.ins > 1 && isBodyAt(gx - 1, gy + 1, excludeId)) return true
+          }
+          if (def.outs > 0) {
+            if (isBodyAt(gx + def.w, gy, excludeId)) return true
+          }
+          const myRect = { x: gx, y: gy, w: def.w, h: def.h }
+          const pinCollision = components.some((c) => {
+            if (c.id === excludeId) return false
+            const cDef = TOOLS[c.type]
+            if (cDef.outs > 0 && pointInRect(c.gx + cDef.w, c.gy, myRect))
+              return true
+            if (cDef.ins > 0) {
+              if (pointInRect(c.gx - 1, c.gy, myRect)) return true
+              if (cDef.ins > 1 && pointInRect(c.gx - 1, c.gy + 1, myRect))
+                return true
+            }
             return false
+          })
+          if (pinCollision) return true
+
+          for (let x = gx; x < gx + def.w; x++) {
+            for (let y = gy; y < gy + def.h; y++) {
+              if (wires.has(`${x},${y}`)) return true
+            }
           }
         }
-        return true
+        return false
+      }
+
+      function isBodyAt(x, y, excludeId) {
+        return components.some((c) => {
+          if (c.id === excludeId) return false
+          const def = TOOLS[c.type]
+          return x >= c.gx && x < c.gx + def.w && y >= c.gy && y < c.gy + def.h
+        })
+      }
+
+      function pointInRect(px, py, rect) {
+        return (
+          px >= rect.x &&
+          px < rect.x + rect.w &&
+          py >= rect.y &&
+          py < rect.y + rect.h
+        )
       }
 
       function drawGrid() {
@@ -292,71 +335,70 @@
 
         wires.forEach((_, key) => {
           const [gx, gy] = key.split(',').map(Number)
-          const px = gx * GRID_SIZE + camera.x + GRID_SIZE / 2
-          const py = gy * GRID_SIZE + camera.y + GRID_SIZE / 2
-
-          const isPowered = wireStates.get(key)
-
-          ctx.strokeStyle = isPowered ? activeColor : '#555'
-          ctx.lineWidth = isPowered ? activeWidth : 2
-          ctx.shadowBlur = isPowered ? 8 : 0
-          ctx.shadowColor = '#ffffaa'
-
-          const u =
-            wires.has(`${gx},${gy - 1}`) && canConnect(gx, gy, gx, gy - 1)
-          const d =
-            wires.has(`${gx},${gy + 1}`) && canConnect(gx, gy, gx, gy + 1)
-          const l = wires.has(`${gx - 1},${gy}`)
-          const r = wires.has(`${gx + 1},${gy}`)
-
-          ctx.beginPath()
-          if (u) {
-            ctx.moveTo(px, py)
-            ctx.lineTo(px, py - GRID_SIZE / 2)
-          }
-          if (d) {
-            ctx.moveTo(px, py)
-            ctx.lineTo(px, py + GRID_SIZE / 2)
-          }
-          if (l) {
-            ctx.moveTo(px, py)
-            ctx.lineTo(px - GRID_SIZE / 2, py)
-          }
-          if (r) {
-            ctx.moveTo(px, py)
-            ctx.lineTo(px + GRID_SIZE / 2, py)
-          }
-          ctx.stroke()
-
-          const neighbors =
-            (u ? 1 : 0) + (d ? 1 : 0) + (l ? 1 : 0) + (r ? 1 : 0)
-          const isStraight = (u && d && !l && !r) || (l && r && !u && !d)
-
-          if (
-            neighbors === 0 ||
-            neighbors > 2 ||
-            (neighbors === 2 && !isStraight) ||
-            neighbors === 1
-          ) {
-            ctx.fillStyle = isPowered ? activeColor : '#555'
-            ctx.beginPath()
-            ctx.arc(px, py, isPowered ? 4 : 3, 0, Math.PI * 2)
-            ctx.fill()
-          }
-          ctx.shadowBlur = 0
+          drawWireSegment(gx, gy, wireStates.get(key), activeColor, activeWidth)
         })
+      }
+
+      function drawWireSegment(gx, gy, isPowered, activeColor, activeWidth) {
+        const px = gx * GRID_SIZE + camera.x + GRID_SIZE / 2
+        const py = gy * GRID_SIZE + camera.y + GRID_SIZE / 2
+
+        ctx.strokeStyle = isPowered ? activeColor : '#555'
+        ctx.lineWidth = isPowered ? activeWidth : 2
+        ctx.shadowBlur = isPowered ? 8 : 0
+        ctx.shadowColor = '#ffffaa'
+
+        const u = shouldConnect(gx, gy, gx, gy - 1)
+        const d = shouldConnect(gx, gy, gx, gy + 1)
+        const l = shouldConnect(gx, gy, gx - 1, gy)
+        const r = shouldConnect(gx, gy, gx + 1, gy)
+
+        ctx.beginPath()
+        if (u) {
+          ctx.moveTo(px, py)
+          ctx.lineTo(px, py - GRID_SIZE / 2)
+        }
+        if (d) {
+          ctx.moveTo(px, py)
+          ctx.lineTo(px, py + GRID_SIZE / 2)
+        }
+        if (l) {
+          ctx.moveTo(px, py)
+          ctx.lineTo(px - GRID_SIZE / 2, py)
+        }
+        if (r) {
+          ctx.moveTo(px, py)
+          ctx.lineTo(px + GRID_SIZE / 2, py)
+        }
+
+        if (!u && !d && !l && !r) {
+          ctx.moveTo(px - 4, py)
+          ctx.lineTo(px + 4, py)
+        }
+
+        ctx.stroke()
+
+        const neighbors = (u ? 1 : 0) + (d ? 1 : 0) + (l ? 1 : 0) + (r ? 1 : 0)
+        const isStraight = (u && d && !l && !r) || (l && r && !u && !d)
+
+        if (
+          neighbors > 2 ||
+          (neighbors === 2 && !isStraight) ||
+          neighbors === 1
+        ) {
+          ctx.fillStyle = isPowered ? activeColor : '#555'
+          ctx.beginPath()
+          ctx.arc(px, py, isPowered ? 4 : 3, 0, Math.PI * 2)
+          ctx.fill()
+        }
+        ctx.shadowBlur = 0
       }
 
       function drawComponent(c, isGhost = false) {
         if (c.type === 'WIRE') {
-          const x = c.gx * GRID_SIZE + camera.x + GRID_SIZE / 2
-          const y = c.gy * GRID_SIZE + camera.y + GRID_SIZE / 2
-          ctx.fillStyle = '#fff'
-          ctx.globalAlpha = isGhost ? 0.5 : 1.0
-          ctx.beginPath()
-          ctx.arc(x, y, 4, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.globalAlpha = 1.0
+          const gx = c.gx
+          const gy = c.gy
+          drawWireSegment(gx, gy, false, '#fff', 2)
           return
         }
 
@@ -369,7 +411,25 @@
         if (isGhost) ctx.globalAlpha = 0.6
         if (isGhost && checkCollision(c.gx, c.gy, c.type))
           ctx.fillStyle = 'rgba(255, 0, 0, 0.5)'
-        else ctx.fillStyle = '#141414'
+        else ctx.fillStyle = '#000'
+
+        ctx.save()
+
+        const now = Date.now()
+        const pulse = (Math.sin(now / 150) + 1) / 2
+        const activeColor = `rgba(255, 255, 120, ${0.7 + pulse * 0.3})`
+        const activeWidth = 2 + pulse * 1.5
+
+        const drawPin = (pgx, pgy) => {
+          const isPowered = wireStates.get(`${pgx},${pgy}`)
+          drawWireSegment(pgx, pgy, isPowered, activeColor, activeWidth)
+        }
+
+        if (def.ins >= 1) drawPin(c.gx - 1, c.gy)
+        if (def.ins >= 2) drawPin(c.gx - 1, c.gy + 1)
+        if (def.outs >= 1) drawPin(c.gx + def.w, c.gy)
+
+        ctx.restore()
 
         ctx.fillRect(x, y, w, h)
         ctx.strokeStyle = def.color
@@ -382,36 +442,37 @@
         ctx.textBaseline = 'middle'
 
         if (c.type === 'INPUT') {
-          const pad = 10
-          ctx.fillStyle = '#222'
+          const pad = 8
+          ctx.fillStyle = '#000'
           ctx.fillRect(x + pad, y + pad, w - pad * 2, h - pad * 2)
-          ctx.fillStyle = c.state ? '#4f4' : '#333'
-          ctx.fillRect(
-            x + pad + 2,
-            y + pad + 2,
-            w - pad * 2 - 4,
-            h - pad * 2 - 4
-          )
-          ctx.fillStyle = '#fff'
-          ctx.fillText(c.state ? 'ON' : 'OFF', x + w / 2, y + h / 2)
+          if (c.state) {
+            ctx.fillStyle = '#4f4'
+            ctx.fillRect(
+              x + pad + 2,
+              y + pad + 2,
+              w - pad * 2 - 4,
+              h - pad * 2 - 4
+            )
+            ctx.fillStyle = '#fff'
+            ctx.fillText('ON', x + w / 2, y + h / 2)
+          } else {
+            ctx.fillStyle = '#333'
+            ctx.fillText('OFF', x + w / 2, y + h / 2)
+          }
         } else if (c.type === 'OUTPUT') {
-          const inKeyDirect = `${c.gx - 1},${c.gy}`
-          const inKeyGap = `${c.gx - 2},${c.gy}`
-          const isLit = wireStates.get(inKeyDirect) || wireStates.get(inKeyGap)
-
           ctx.beginPath()
           ctx.arc(x + w / 2, y + h / 2, 12, 0, Math.PI * 2)
-          ctx.fillStyle = '#222'
+          ctx.fillStyle = '#000'
           ctx.fill()
 
           ctx.beginPath()
           ctx.arc(x + w / 2, y + h / 2, 8, 0, Math.PI * 2)
-          if (isLit) {
+          if (c.isLit) {
             ctx.fillStyle = '#ffff00'
             ctx.shadowColor = '#ffff00'
             ctx.shadowBlur = 20
           } else {
-            ctx.fillStyle = '#444'
+            ctx.fillStyle = '#333'
           }
           ctx.fill()
           ctx.shadowBlur = 0
@@ -419,71 +480,7 @@
           ctx.fillText(def.label, x + w / 2, y + h / 2)
         }
 
-        const now = Date.now()
-        const pulse = (Math.sin(now / 150) + 1) / 2
-        const activeColor = `rgba(255, 255, 120, ${0.7 + pulse * 0.3})`
-
-        const drawPort = (gx, gy, isInput) => {
-          const px = (isInput ? gx : gx + def.w) * GRID_SIZE + camera.x
-          const py = (gy + 0.5) * GRID_SIZE + camera.y
-
-          const gapX = isInput ? gx - 2 : gx + def.w + 1
-          const gapWireKey = `${gapX},${gy}`
-          const hasGapWire = wires.has(gapWireKey)
-          const isPowered = wireStates.get(gapWireKey)
-
-          const len = hasGapWire ? 37 : 12
-          const endX = px + (isInput ? -len : len)
-
-          ctx.beginPath()
-          ctx.moveTo(px, py)
-          ctx.lineTo(endX, py)
-          ctx.strokeStyle = hasGapWire && isPowered ? activeColor : '#fff'
-          ctx.lineWidth = 2
-          ctx.shadowBlur = hasGapWire && isPowered ? 5 : 0
-          ctx.shadowColor = '#ffffaa'
-          ctx.stroke()
-          ctx.shadowBlur = 0
-
-          ctx.beginPath()
-          ctx.arc(endX, py, 2, 0, Math.PI * 2)
-          ctx.fillStyle = hasGapWire && isPowered ? '#ffffaa' : '#fff'
-          ctx.fill()
-        }
-
-        if (def.ins >= 1) drawPort(c.gx, c.gy, true)
-        if (def.ins >= 2) drawPort(c.gx, c.gy + 1, true)
-        if (def.outs >= 1) drawPort(c.gx, c.gy, false)
-
         if (isGhost) ctx.globalAlpha = 1.0
-      }
-
-      function checkCollision(gx, gy, type, excludeId = null) {
-        const def = TOOLS[type]
-        const w = def.w
-        const h = def.h
-
-        const compCollision = components.some((c) => {
-          if (c.id === excludeId) return false
-          const cDef = TOOLS[c.type]
-          return (
-            gx < c.gx + cDef.w &&
-            gx + w > c.gx &&
-            gy < c.gy + cDef.h &&
-            gy + h > c.gy
-          )
-        })
-        if (compCollision) return true
-
-        if (type !== 'WIRE') {
-          for (let x = gx; x < gx + w; x++) {
-            for (let y = gy; y < gy + h; y++) {
-              if (wires.has(`${x},${y}`)) return true
-            }
-          }
-        }
-
-        return false
       }
 
       function render() {
@@ -592,7 +589,7 @@
             const screenY = hit.gy * GRID_SIZE + camera.y
             const cx = e.clientX - screenX
             const cy = e.clientY - screenY
-            const pad = 10
+            const pad = 8
             const w = TOOLS[hit.type].w * GRID_SIZE
             const h = TOOLS[hit.type].h * GRID_SIZE
 
