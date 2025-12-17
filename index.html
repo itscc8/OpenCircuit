@@ -1643,22 +1643,7 @@
       }
 
       function handleDoubleClick(e) {
-        const g = getGrid({ x: e.clientX, y: e.clientY })
-        const hit = componentAt(g.x, g.y)
-        if (!hit) return
-        if (hit.type === 'SPLITTER' || hit.type === 'MERGER') {
-          const next = prompt('Bus Width (1-64)', hit.properties.busSize ?? 8)
-          if (next !== null) {
-            hit.properties.busSize = clampBits(next, 8)
-            configureComponent(hit)
-          }
-        } else if (hit.properties.bitWidth !== undefined) {
-          const next = prompt('Bit Width (1-64)', hit.properties.bitWidth ?? 1)
-          if (next !== null) {
-            hit.properties.bitWidth = clampBits(next, 1)
-            configureComponent(hit)
-          }
-        }
+        // double-tap editing disabled; use context menu instead
       }
 
       canvas.addEventListener('pointerdown', (e) => {
@@ -1675,6 +1660,10 @@
         if (draggingFromMenu) return
 
         if (portHit) {
+          if (e.button === 2) {
+            showContextMenu(e.clientX, e.clientY, [])
+            return
+          }
           draggingWireStart = portHit
           mode = 'CONNECTING'
           return
@@ -1682,7 +1671,7 @@
 
         const compHit = componentAt(g.x, g.y)
         if (compHit) {
-          if (compHit.type === 'INPUT') {
+          if (compHit.type === 'INPUT' && e.button !== 2) {
             const posX = compHit.gx * GRID_SIZE + camera.x
             const posY = compHit.gy * GRID_SIZE + camera.y
             const relX = e.clientX - posX
