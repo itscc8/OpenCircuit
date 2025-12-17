@@ -860,8 +860,25 @@
         ctx.lineWidth = 1
         const width = ctx.measureText(text).width + pad * 2
         const height = 16
+        const rx = 6
+        const left = x - width / 2
+        const top = y - height / 2
         ctx.beginPath()
-        ctx.roundRect(x - width / 2, y - height / 2, width, height, 6)
+        ctx.moveTo(left + rx, top)
+        ctx.lineTo(left + width - rx, top)
+        ctx.quadraticCurveTo(left + width, top, left + width, top + rx)
+        ctx.lineTo(left + width, top + height - rx)
+        ctx.quadraticCurveTo(
+          left + width,
+          top + height,
+          left + width - rx,
+          top + height
+        )
+        ctx.lineTo(left + rx, top + height)
+        ctx.quadraticCurveTo(left, top + height, left, top + height - rx)
+        ctx.lineTo(left, top + rx)
+        ctx.quadraticCurveTo(left, top, left + rx, top)
+        ctx.closePath()
         ctx.fill()
         ctx.stroke()
         ctx.fillStyle = '#fff'
@@ -1230,7 +1247,11 @@
         tabLoad.addEventListener('click', () => setModalTab('load'))
         copyBtn.addEventListener('click', async () => {
           updateSaveTextarea()
-          await navigator.clipboard.writeText(saveTextarea.value)
+          try {
+            await navigator.clipboard.writeText(saveTextarea.value)
+          } catch (err) {
+            alert('Copy failed: ' + (err?.message || err))
+          }
         })
         downloadBtn.addEventListener('click', () => {
           updateSaveTextarea()
