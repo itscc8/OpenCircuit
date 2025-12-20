@@ -564,9 +564,10 @@
 
       function calculateMemoryAddress(input, memoryLength) {
         const len = Math.max(1, memoryLength || 1)
-        const raw = Math.abs(Number(toBig(input) ?? 0n))
-        if (!Number.isFinite(raw)) return 0
-        return raw % len
+        const lenBig = BigInt(len)
+        const raw = toBig(input) ?? 0n
+        const mod = ((raw % lenBig) + lenBig) % lenBig
+        return Number(mod)
       }
 
       function openHexEditor(comp) {
@@ -1441,7 +1442,8 @@
             const clk = inputs[3] ?? 0n
             const rising = clk !== 0n && comp.lastClock === 0n
             if (rising && we !== 0n) {
-              mem[addr] = Number(dataIn & BYTE_MASK_BIG)
+              const masked = Number(dataIn & BYTE_MASK_BIG)
+              mem[addr] = masked
             }
             comp.lastClock = clk
             const byte = BigInt(mem[addr] || 0)
@@ -2476,7 +2478,7 @@
           )
           comp.id = c.id || comp.id
           if ((c.type === 'RAM' || c.type === 'ROM') && Array.isArray(c.memory)) {
-            comp.memory = new Uint8Array(c.memory.map((v) => Number(v) & BYTE_MASK))
+            comp.memory = Uint8Array.from(c.memory, (v) => Number(v) & BYTE_MASK)
           }
           configureComponent(comp)
           components.push(comp)
