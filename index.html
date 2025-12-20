@@ -565,7 +565,7 @@
       function calculateMemoryAddress(input, memoryLength) {
         const len = Math.max(1, memoryLength || 1)
         const lenBig = BigInt(len)
-        const raw = toBig(input) ?? 0n
+        const raw = toBig(input)
         const mod = ((raw % lenBig) + lenBig) % lenBig
         return Number(mod)
       }
@@ -1442,7 +1442,7 @@
             const clk = inputs[3] ?? 0n
             const rising = clk !== 0n && comp.lastClock === 0n
             if (rising && we !== 0n) {
-              const masked = Number(dataIn & BYTE_MASK_BIG)
+              const masked = Number(dataIn & BYTE_MASK_BIG) & BYTE_MASK
               mem[addr] = masked
             }
             comp.lastClock = clk
@@ -2478,7 +2478,7 @@
           )
           comp.id = c.id || comp.id
           if ((c.type === 'RAM' || c.type === 'ROM') && Array.isArray(c.memory)) {
-            comp.memory = Uint8Array.from(c.memory, (v) => Number(v) & BYTE_MASK)
+            comp.memory = Uint8Array.from(c.memory)
           }
           configureComponent(comp)
           components.push(comp)
