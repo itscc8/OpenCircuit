@@ -566,6 +566,7 @@
         const len = Math.max(1, memoryLength || 1)
         const lenBig = BigInt(len)
         const raw = toBig(input)
+        // Normalize to a non-negative address even if the input was negative
         const mod = ((raw % lenBig) + lenBig) % lenBig
         return Number(mod)
       }
@@ -1442,7 +1443,7 @@
             const clk = inputs[3] ?? 0n
             const rising = clk !== 0n && comp.lastClock === 0n
             if (rising && we !== 0n) {
-              const masked = Number(dataIn & BYTE_MASK_BIG) & BYTE_MASK
+              const masked = Number(dataIn & BYTE_MASK_BIG)
               mem[addr] = masked
             }
             comp.lastClock = clk
