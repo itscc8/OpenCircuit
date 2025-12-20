@@ -24,6 +24,12 @@ OpenCircuit is a lightweight, high-performance **digital logic simulator** built
 
 ---
 
+## 🗺️ Ultimate EDA roadmap
+
+The **Ultimate EDA** architecture plan is documented in [ARCHITECTURE_PLAN.md](./ARCHITECTURE_PLAN.md). It outlines phased delivery (simulation engine, hierarchy, routing, analysis, and advanced tooling) while keeping the vanilla JS + Canvas stack and 60 FPS target. No code is generated there—it's a strategy guide for upcoming iterations.
+
+---
+
 ## 🎮 How to Use
 
 ### Basic Controls
