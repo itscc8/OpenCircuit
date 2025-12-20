@@ -226,4 +226,220 @@ test.describe('Discrete tick simulation', () => {
     )
     expect(hasThemedSlider).toBe(true)
   })
+
+  test('memory primitives support load/save and runtime writes', async ({ page }) => {
+    await gotoApp(page)
+    await page.evaluate(() => {
+      window.CircuitAPI.reset()
+      const addr = new Component(1, 1, 'INPUT', { bitWidth: 2 })
+      addr.id = 'addr'
+      const rom = new Component(4, 1, 'ROM', { size: 4, bitWidth: 8 })
+      rom.id = 'rom1'
+      const out = new Component(7, 1, 'OUTPUT', { bitWidth: 8 })
+      out.id = 'out'
+      components.push(addr, rom, out)
+      wires.push(
+        new Wire({
+          fromCompId: addr.id,
+          fromPortId: 'out',
+          toCompId: rom.id,
+          toPortId: 'addr',
+          bitWidth: 2,
+        })
+      )
+      wires.push(
+        new Wire({
+          fromCompId: rom.id,
+          fromPortId: 'data',
+          toCompId: out.id,
+          toPortId: 'in',
+          bitWidth: 8,
+        })
+      )
+      window.CircuitAPI.loadMemory('rom1', [0xaa, 0xbb, 0xcc, 0xdd])
+      window.CircuitAPI.setInput('addr', 1)
+      window.CircuitAPI.tick(2)
+    })
+
+    const romVal = await page.evaluate(() =>
+      window.CircuitAPI.readComponent('out')?.inputs?.[0]?.value?.toString(16)
+    )
+    expect(romVal).toBe('bb')
+
+    await page.evaluate(() => {
+      window.CircuitAPI.reset()
+      const addr = new Component(1, 1, 'INPUT', { bitWidth: 2 })
+      addr.id = 'addr'
+      const din = new Component(1, 3, 'INPUT', { bitWidth: 8 })
+      din.id = 'din'
+      const we = new Component(1, 5, 'INPUT', { bitWidth: 1 })
+      we.id = 'we'
+      const clk = new Component(1, 7, 'INPUT', { bitWidth: 1 })
+      clk.id = 'clk'
+      const ram = new Component(4, 2, 'RAM', { size: 4, bitWidth: 8 })
+      ram.id = 'ram1'
+      const out = new Component(7, 2, 'OUTPUT', { bitWidth: 8 })
+      out.id = 'out'
+      components.push(addr, din, we, clk, ram, out)
+      wires.push(
+        new Wire({
+          fromCompId: addr.id,
+          fromPortId: 'out',
+          toCompId: ram.id,
+          toPortId: 'addr',
+          bitWidth: 2,
+        })
+      )
+      wires.push(
+        new Wire({
+          fromCompId: din.id,
+          fromPortId: 'out',
+          toCompId: ram.id,
+          toPortId: 'data_in',
+          bitWidth: 8,
+        })
+      )
+      wires.push(
+        new Wire({
+          fromCompId: we.id,
+          fromPortId: 'out',
+          toCompId: ram.id,
+          toPortId: 'we',
+          bitWidth: 1,
+        })
+      )
+      wires.push(
+        new Wire({
+          fromCompId: clk.id,
+          fromPortId: 'out',
+          toCompId: ram.id,
+          toPortId: 'clk',
+          bitWidth: 1,
+        })
+      )
+      wires.push(
+        new Wire({
+          fromCompId: ram.id,
+          fromPortId: 'data',
+          toCompId: out.id,
+          toPortId: 'in',
+          bitWidth: 8,
+        })
+      )
+      window.CircuitAPI.setInput('addr', 2)
+      window.CircuitAPI.setInput('din', 0x5a)
+      window.CircuitAPI.setInput('we', 1)
+      window.CircuitAPI.setInput('clk', 0)
+      window.CircuitAPI.tick(1)
+      window.CircuitAPI.setInput('clk', 1)
+      window.CircuitAPI.tick(1)
+      window.CircuitAPI.setInput('we', 0)
+      window.CircuitAPI.tick(1)
+    })
+
+    const ramVal = await page.evaluate(() =>
+      window.CircuitAPI.readComponent('out')?.inputs?.[0]?.value?.toString(16)
+    )
+    expect(ramVal).toBe('5a')
+  })
+
+  test('custom modules honor parameters for port widths', async ({ page }) => {
+    await gotoApp(page)
+    const widths = await page.evaluate(() => {
+      window.CircuitAPI.reset()
+      const def = {
+        name: 'PARAM_PASS',
+        parameters: { WIDTH: 4 },
+        components: [
+          { id: 'in', type: 'INPUT', gx: 0, gy: 0, properties: { bitWidth: '$WIDTH' } },
+          { id: 'out', type: 'OUTPUT', gx: 2, gy: 0, properties: { bitWidth: '$WIDTH' } },
+        ],
+        wires: [
+          {
+            fromCompId: 'in',
+            fromPortId: 'out',
+            toCompId: 'out',
+            toPortId: 'in',
+            bitWidth: '$WIDTH',
+          },
+        ],
+        inputs: [{ componentId: 'in', bitWidth: '$WIDTH' }],
+        outputs: [{ componentId: 'out', bitWidth: '$WIDTH' }],
+      }
+      window.CircuitAPI.registerCustomTool(def)
+      const inst = new Component(3, 3, 'PARAM_PASS', { parameters: { WIDTH: 8 } })
+      components.push(inst)
+      return {
+        inWidth: inst.inputs[0].bitWidth,
+        outWidth: inst.outputs[0].bitWidth,
+      }
+    })
+
+    expect(widths.inWidth).toBe(8)
+    expect(widths.outWidth).toBe(8)
+  })
+
+  test('named nets are tracked and design rule checks find issues', async ({ page }) => {
+    await gotoApp(page)
+    const result = await page.evaluate(() => {
+      window.CircuitAPI.reset()
+      const a = new Component(1, 1, 'INPUT')
+      a.id = 'a'
+      const b = new Component(4, 1, 'OUTPUT')
+      b.id = 'b'
+      const and = new Component(2, 3, 'AND')
+      and.id = 'gate'
+      components.push(a, b, and)
+      const w = new Wire({
+        fromCompId: a.id,
+        fromPortId: 'out',
+        toCompId: b.id,
+        toPortId: 'in',
+        bitWidth: 1,
+      })
+      wires.push(
+        new Wire({
+          fromCompId: a.id,
+          fromPortId: 'out',
+          toCompId: and.id,
+          toPortId: 'in0',
+          bitWidth: 1,
+        })
+      )
+      wires.push(w)
+      window.CircuitAPI.setNetName(w.id, 'BUS1')
+      const nets = window.CircuitAPI.listNets()
+      const drc = window.CircuitAPI.runDRC()
+      return { netName: window.CircuitAPI.getNetName(w.id), nets, drcCount: drc.length }
+    })
+
+    expect(result.netName).toBe('BUS1')
+    expect(result.nets.find((n) => n.name === 'BUS1')).toBeTruthy()
+    expect(result.drcCount).toBeGreaterThan(0)
+  })
+
+  test('auto-routing produces orthogonal path data', async ({ page }) => {
+    await gotoApp(page)
+    const pathInfo = await page.evaluate(() => {
+      window.CircuitAPI.reset()
+      const a = new Component(1, 1, 'INPUT')
+      a.id = 'a'
+      const b = new Component(6, 5, 'OUTPUT')
+      b.id = 'b'
+      components.push(a, b)
+      const w = new Wire({
+        fromCompId: a.id,
+        fromPortId: 'out',
+        toCompId: b.id,
+        toPortId: 'in',
+        bitWidth: 1,
+      })
+      wires.push(w)
+      applyAutoRoute(w)
+      return { len: w.path?.length || 0, isGrid: !!w.pathIsGrid }
+    })
+
+    expect(pathInfo.isGrid).toBe(true)
+    expect(pathInfo.len).toBeGreaterThanOrEqual(3)
+  })
 })
