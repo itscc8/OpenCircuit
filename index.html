@@ -369,6 +369,9 @@
       const HUD_OFFSET =
         parseInt(getComputedStyle(document.documentElement).getPropertyValue('--hud-offset')) ||
         200
+      const MAX_DRC_DISPLAY_COUNT = 5
+      const BYTE_MASK = 0xff
+      const BYTE_MASK_BIG = 0xffn
 
       let components = []
       let wires = []
@@ -417,6 +420,7 @@
       const eventQueue = []
       const scheduledComponents = new Map()
       const MAX_EVENTS_PER_TICK = 5000
+      let drcFindings = []
 
       function clampBits(value, fallback = 1) {
         const n = Number(value)
@@ -518,6 +522,126 @@
         }
       }
 
+      function syncNamedNet(wire, value) {
+        if (!wire?.netName) return
+        wires.forEach((other) => {
+          if (other === wire) return
+          if (other.netName === wire.netName) {
+            if (other.value !== value) {
+              other.value = value
+              const dest = components.find((c) => c.id === other.toCompId)
+              if (dest) queueComponent(dest, gateDelay(dest.type))
+            }
+          }
+        })
+      }
+
+      function ensureMemory(comp) {
+        if (!comp) return null
+        const size = Math.max(1, Math.floor(comp.properties?.size || 1))
+        if (!(comp.memory instanceof Uint8Array) || comp.memory.length !== size) {
+          comp.memory = new Uint8Array(size)
+        }
+        return comp.memory
+      }
+
+      function memoryToHex(comp) {
+        ensureMemory(comp)
+        return Array.from(comp.memory || [])
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join(' ')
+      }
+
+      function hexToBytes(input) {
+        if (!input) return []
+        return input
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((v) => parseInt(v, 16) & BYTE_MASK)
+          .filter((n) => Number.isFinite(n))
+      }
+
+      function calculateMemoryAddress(input, memoryLength) {
+        const len = Math.max(1, memoryLength || 1)
+        const lenBig = BigInt(len)
+        const raw = toBig(input)
+        // Normalize to a non-negative address even if the input was negative
+        const mod = ((raw % lenBig) + lenBig) % lenBig
+        return Number(mod)
+      }
+
+      function openHexEditor(comp) {
+        if (!comp) return
+        ensureMemory(comp)
+        const current = memoryToHex(comp)
+        const next = prompt(`Edit ${comp.type} ${comp.id} (hex bytes)`, current)
+        if (next === null) return
+        const bytes = hexToBytes(next)
+        comp.memory.fill(0)
+        comp.memory.set(bytes.slice(0, comp.memory.length))
+        queueComponent(comp, 0)
+      }
+
+      function runDRC() {
+        const warnings = []
+        const driverMap = new Map()
+        wires.forEach((w) => {
+          const netKey = w.netName ? `net:${w.netName}` : `wire:${w.id}`
+          const srcKey = `${w.fromCompId}:${w.fromPortId}`
+          if (!driverMap.has(netKey)) driverMap.set(netKey, new Set())
+          driverMap.get(netKey).add(srcKey)
+          const fromPort = getPort(w.fromCompId, w.fromPortId)
+          const toPort = getPort(w.toCompId, w.toPortId)
+          if (fromPort && toPort && fromPort.bitWidth !== toPort.bitWidth) {
+            warnings.push({
+              type: 'width_mismatch',
+              message: `Width mismatch on wire ${w.id}`,
+              location: w.id,
+            })
+          }
+        })
+
+        driverMap.forEach((drivers, key) => {
+          if (key.startsWith('net:') && drivers.size > 1) {
+            warnings.push({
+              type: 'short_circuit',
+              message: `Multiple drivers detected on ${key.slice(4)}`,
+              location: key,
+            })
+          }
+        })
+
+        components.forEach((c) => {
+          c.inputs.forEach((p) => {
+            const connected = wires.some(
+              (w) => w.toCompId === c.id && w.toPortId === p.id
+            )
+            if (!connected) {
+              warnings.push({
+                type: 'floating_input',
+                message: `Floating input ${c.id}:${p.id}`,
+                location: c.id,
+              })
+            }
+          })
+          c.outputs.forEach((p) => {
+            const connected = wires.some(
+              (w) => w.fromCompId === c.id && w.fromPortId === p.id
+            )
+            if (!connected) {
+              warnings.push({
+                type: 'unconnected_output',
+                message: `Unconnected output ${c.id}:${p.id}`,
+                location: c.id,
+              })
+            }
+          })
+        })
+        drcFindings = warnings
+        return warnings
+      }
+
       function seedInitialEvents() {
         scheduledComponents.clear()
         eventQueue.length = 0
@@ -538,7 +662,17 @@
       }
 
       class Wire {
-        constructor({ id, fromCompId, fromPortId, toCompId, toPortId, bitWidth }) {
+        constructor({
+          id,
+          fromCompId,
+          fromPortId,
+          toCompId,
+          toPortId,
+          bitWidth,
+          netName = null,
+          path = null,
+          pathIsGrid = false,
+        }) {
           this.id = id || makeId('wire')
           this.fromCompId = fromCompId
           this.fromPortId = fromPortId
@@ -548,6 +682,9 @@
           this.value = 0n
           this.frameToggles = 0
           this.showFlow = false
+          this.netName = netName || null
+          this.path = path || null
+          this.pathIsGrid = !!pathIsGrid
         }
       }
 
@@ -804,6 +941,102 @@
             c.inputs = []
           },
         },
+        ROM: {
+          label: 'ROM',
+          color: '#facc15',
+          w: 3,
+          h: 3,
+          defaultProperties: { bitWidth: 8, size: 64 },
+          setup: (c) => {
+            const bits = clampBits(c.properties.bitWidth || 8)
+            const size = Math.max(1, Math.floor(c.properties.size || 64))
+            c.properties.bitWidth = bits
+            c.properties.size = size
+            c.properties.addrWidth = clampBits(Math.ceil(Math.log2(size)) || 1, 1)
+            ensureMemory(c)
+            c.inputs = [
+              new Port({
+                id: 'addr',
+                parentId: c.id,
+                type: 'IN',
+                relativeX: 0,
+                relativeY: c.h / 2,
+                bitWidth: c.properties.addrWidth,
+              }),
+            ]
+            c.outputs = [
+              new Port({
+                id: 'data',
+                parentId: c.id,
+                type: 'OUT',
+                relativeX: c.w,
+                relativeY: c.h / 2,
+                bitWidth: bits,
+              }),
+            ]
+          },
+        },
+        RAM: {
+          label: 'RAM',
+          color: '#4ade80',
+          w: 3,
+          h: 3,
+          defaultProperties: { bitWidth: 8, size: 64 },
+          setup: (c) => {
+            const bits = clampBits(c.properties.bitWidth || 8)
+            const size = Math.max(1, Math.floor(c.properties.size || 64))
+            const addrWidth = clampBits(Math.ceil(Math.log2(size)) || 1)
+            c.properties.bitWidth = bits
+            c.properties.size = size
+            c.properties.addrWidth = addrWidth
+            ensureMemory(c)
+            c.lastClock = c.lastClock ?? 0n
+            c.inputs = [
+              new Port({
+                id: 'addr',
+                parentId: c.id,
+                type: 'IN',
+                relativeX: 0,
+                relativeY: c.h / 2 - 0.6,
+                bitWidth: addrWidth,
+              }),
+              new Port({
+                id: 'data_in',
+                parentId: c.id,
+                type: 'IN',
+                relativeX: 0,
+                relativeY: c.h / 2 + 0.6,
+                bitWidth: bits,
+              }),
+              new Port({
+                id: 'we',
+                parentId: c.id,
+                type: 'IN',
+                relativeX: 0,
+                relativeY: c.h - 0.6,
+                bitWidth: 1,
+              }),
+              new Port({
+                id: 'clk',
+                parentId: c.id,
+                type: 'IN',
+                relativeX: 0,
+                relativeY: 0.6,
+                bitWidth: 1,
+              }),
+            ]
+            c.outputs = [
+              new Port({
+                id: 'data',
+                parentId: c.id,
+                type: 'OUT',
+                relativeX: c.w,
+                relativeY: c.h / 2,
+                bitWidth: bits,
+              }),
+            ]
+          },
+        },
         SPLITTER: {
           label: 'SPLIT',
           color: '#0ea5e9',
@@ -880,6 +1113,19 @@
         },
       }
 
+      function resolveParamValue(value, params = {}) {
+        if (typeof value === 'function') {
+          return clampBits(value(params))
+        }
+        if (typeof value === 'string') {
+          const key = value.startsWith('$') ? value.slice(1) : null
+          if (key && params[key] !== undefined) return clampBits(params[key])
+          const asNum = Number(value)
+          if (Number.isFinite(asNum)) return clampBits(asNum)
+        }
+        return clampBits(value ?? 1)
+      }
+
       function registerCustomTool(def) {
         const ins = def.inputs.length
         const outs = def.outputs.length
@@ -890,34 +1136,41 @@
           color: `hsl(${hue},70%,65%)`,
           w: 3,
           h: height,
-          defaultProperties: {},
+          defaultProperties: { parameters: { ...(def.parameters || {}) } },
           setup: (c) => {
+            const params = {
+              ...(def.parameters || {}),
+              ...(c.properties.parameters || c.properties.params || {}),
+            }
+            c.parameters = params
             c.w = 3
             c.h = height
             c.inputs = def.inputs.map((p, idx) => {
+              const bw = resolveParamValue(p.bitWidth, params)
               return new Port({
                 id: `in${idx}`,
                 parentId: c.id,
                 type: 'IN',
                 relativeX: 0,
                 relativeY: (idx + 1) * (c.h / (ins + 1)),
-                bitWidth: p.bitWidth,
+                bitWidth: bw,
               })
             })
             c.outputs = def.outputs.map((p, idx) => {
+              const bw = resolveParamValue(p.bitWidth, params)
               return new Port({
                 id: `out${idx}`,
                 parentId: c.id,
                 type: 'OUT',
                 relativeX: c.w,
                 relativeY: (idx + 1) * (c.h / (outs + 1)),
-                bitWidth: p.bitWidth,
+                bitWidth: bw,
               })
             })
             c.customName = def.name
           },
         }
-        customLibrary[def.name] = def
+        customLibrary[def.name] = { ...def, parameters: { ...(def.parameters || {}) } }
       }
 
       function componentAt(gridX, gridY) {
@@ -1015,6 +1268,7 @@
             bitWidth: from.port.bitWidth,
           })
         )
+        applyAutoRoute(wires[wires.length - 1])
         queueComponent(to.component, gateDelay(to.component.type))
       }
 
@@ -1069,6 +1323,7 @@
             wire.frameToggles = (wire.frameToggles || 0) + 1
           }
           wire.value = newVal
+          syncNamedNet(wire, newVal)
           if (probes.has(wire.id)) {
             const probe = probes.get(wire.id)
             probe.history.push(newVal)
@@ -1173,6 +1428,29 @@
             comp.lastClock = clk
             return [comp.stateValue ?? 0n]
           }
+          case 'ROM': {
+            const mem = ensureMemory(comp)
+            const addr = calculateMemoryAddress(inputs[0], mem.length)
+            const byte = BigInt(mem[addr] || 0)
+            const width = comp.outputs[0]?.bitWidth || 8
+            return [maskValue(byte, width)]
+          }
+          case 'RAM': {
+            const mem = ensureMemory(comp)
+            const addr = calculateMemoryAddress(inputs[0], mem.length)
+            const dataIn = maskValue(inputs[1] ?? 0n, comp.properties.bitWidth || 8)
+            const we = inputs[2] ?? 0n
+            const clk = inputs[3] ?? 0n
+            const rising = clk !== 0n && comp.lastClock === 0n
+            if (rising && we !== 0n) {
+              const masked = Number(dataIn & BYTE_MASK_BIG)
+              mem[addr] = masked
+            }
+            comp.lastClock = clk
+            const byte = BigInt(mem[addr] || 0)
+            const width = comp.outputs[0]?.bitWidth || 8
+            return [maskValue(byte, width)]
+          }
           case 'CLOCK': {
             const period = Math.max(1, Math.floor(comp.properties.period || 2))
             comp.clockPhase = (comp.clockPhase + 1) % period
@@ -1189,10 +1467,18 @@
         }
       }
 
-      function cloneCustomInstance(def) {
+      function cloneCustomInstance(def, params = {}) {
         const compMap = new Map()
         const comps = def.components.map((c) => {
-          const inst = new Component(c.gx, c.gy, c.type, { ...c.properties })
+          const props = { ...(c.properties || {}) }
+          if (typeof props.bitWidth === 'string') {
+            props.bitWidth = resolveParamValue(props.bitWidth, params)
+          }
+          if (typeof props.busSize === 'string') {
+            props.busSize = resolveParamValue(props.busSize, params)
+          }
+          props.parameters = { ...(props.parameters || {}), ...params }
+          const inst = new Component(c.gx, c.gy, c.type, props)
           inst.id = c.id
           compMap.set(c.id, inst)
           return inst
@@ -1209,7 +1495,7 @@
         const def = customLibrary[comp.type]
         if (!def) return []
         if (!comp.subInstance) {
-          comp.subInstance = cloneCustomInstance(def)
+          comp.subInstance = cloneCustomInstance(def, comp.parameters || def.parameters || {})
         }
         const sub = comp.subInstance
         // inject inputs into mapped internal INPUT components
@@ -1342,6 +1628,36 @@
         return wire.bitWidth > 7 ? '#f97316' : '#3b82f6'
       }
 
+      function applyAutoRoute(wire) {
+        const fromComp = components.find((c) => c.id === wire.fromCompId)
+        const toComp = components.find((c) => c.id === wire.toCompId)
+        if (!fromComp || !toComp) return
+        const fromPort = fromComp.outputs.find((p) => p.id === wire.fromPortId)
+        const toPort = toComp.inputs.find((p) => p.id === wire.toPortId)
+        if (!fromPort || !toPort) return
+        const start = {
+          x: fromComp.gx + fromPort.relativeX,
+          y: fromComp.gy + fromPort.relativeY,
+        }
+        const end = { x: toComp.gx + toPort.relativeX, y: toComp.gy + toPort.relativeY }
+        // Use a simple orthogonal L-shaped route to keep paths grid-aligned
+        const path = [
+          { x: start.x, y: start.y },
+          { x: start.x, y: end.y },
+          { x: end.x, y: end.y },
+        ]
+        wire.path = path
+        wire.pathIsGrid = true
+      }
+
+      function rerouteForComponent(comp) {
+        wires.forEach((w) => {
+          if (w.fromCompId === comp.id || w.toCompId === comp.id) {
+            applyAutoRoute(w)
+          }
+        })
+      }
+
       function drawWires() {
         wires.forEach((wire) => {
           drawWire(wire)
@@ -1388,8 +1704,17 @@
         }
         ctx.lineCap = 'round'
         ctx.beginPath()
-        ctx.moveTo(start.x, start.y)
-        ctx.lineTo(end.x, end.y)
+        const rawPoints =
+          Array.isArray(wire.path) && wire.path.length ? wire.path : [start, end]
+        const pathPoints = rawPoints.map((p) =>
+          wire.pathIsGrid
+            ? { x: p.x * GRID_SIZE + camera.x, y: p.y * GRID_SIZE + camera.y }
+            : p
+        )
+        ctx.moveTo(pathPoints[0].x, pathPoints[0].y)
+        for (let i = 1; i < pathPoints.length; i++) {
+          ctx.lineTo(pathPoints[i].x, pathPoints[i].y)
+        }
         ctx.stroke()
         if (wire.showFlow) {
           ctx.setLineDash([])
@@ -1755,6 +2080,29 @@
         flowBtn.onclick = (e) => showFlowPreview(e.currentTarget)
         hud.appendChild(flowBtn)
 
+        const drcBtn = document.createElement('button')
+        drcBtn.className = 'action'
+        drcBtn.innerText = `Run DRC (${drcFindings.length})`
+        drcBtn.onclick = () => {
+          runDRC()
+          refreshHUD()
+        }
+        hud.appendChild(drcBtn)
+        if (drcFindings.length) {
+          const drcList = document.createElement('div')
+          drcList.style.fontSize = '11px'
+          drcList.style.color = '#f97316'
+          drcList.style.display = 'flex'
+          drcList.style.flexDirection = 'column'
+          drcList.style.gap = '4px'
+          drcFindings.slice(0, MAX_DRC_DISPLAY_COUNT).forEach((f) => {
+            const row = document.createElement('div')
+            row.textContent = `⚠ ${f.message}`
+            drcList.appendChild(row)
+          })
+          hud.appendChild(drcList)
+        }
+
         const selectBtn = document.createElement('button')
         selectBtn.className = mode === 'SELECTING' ? 'action active' : 'action'
         selectBtn.innerText = '[ ] Select Area'
@@ -1843,6 +2191,7 @@
               wires: def.wires,
               inputs: def.inputs,
               outputs: def.outputs,
+              parameters: def.parameters || {},
             })),
             main: {
               components: components.map((c) => ({
@@ -1850,12 +2199,19 @@
                 type: c.type,
                 pos: { x: c.gx, y: c.gy },
                 properties: c.properties,
+                memory:
+                  c.type === 'RAM' || c.type === 'ROM'
+                    ? Array.from(ensureMemory(c) || [])
+                    : undefined,
               })),
               wires: wires.map((w) => ({
                 from: { comp: w.fromCompId, port: w.fromPortId },
                 to: { comp: w.toCompId, port: w.toPortId },
                 bitWidth: w.bitWidth,
                 showFlow: !!w.showFlow,
+                netName: w.netName || undefined,
+                path: w.path || undefined,
+                pathIsGrid: w.pathIsGrid || undefined,
               })),
             },
           },
@@ -1883,6 +2239,10 @@
         })
 
         const outputNet = new Map()
+        function netNameForWire(wire, fallback) {
+          if (wire?.netName) return sanitizeId(wire.netName)
+          return fallback
+        }
         function netForOutput(comp, port) {
           const key = `${comp.id}:${port.id}`
           if (outputNet.has(key)) return outputNet.get(key)
@@ -1898,6 +2258,7 @@
         function inputNet(comp, port) {
           const w = wireToInput.get(`${comp.id}:${port.id}`)
           if (!w) return DEFAULT_NET
+          if (w.netName) return sanitizeId(w.netName)
           const src = compById.get(w.fromCompId)
           const srcPort = src?.outputs.find((p) => p.id === w.fromPortId)
           if (!src || !srcPort) return DEFAULT_NET
@@ -1925,7 +2286,10 @@
         components.forEach((comp) => {
           if (comp.type === 'INPUT' || comp.type === 'OUTPUT') return
           comp.outputs.forEach((port) => {
-            const net = netForOutput(comp, port)
+            const net = netNameForWire(
+              wireToInput.get(`${comp.id}:${port.id}`),
+              netForOutput(comp, port)
+            )
             wiresDecl.push({ name: net, width: port.bitWidth })
           })
           const ins = comp.inputs.map((p) => inputNet(comp, p))
@@ -1995,6 +2359,12 @@
             }
             default:
               break
+          }
+        })
+
+        wires.forEach((w) => {
+          if (w.netName) {
+            wiresDecl.push({ name: sanitizeId(w.netName), width: w.bitWidth })
           }
         })
 
@@ -2082,6 +2452,7 @@
         components = []
         wires = []
         probes.clear()
+        drcFindings = []
         resetSimulationClock()
         const lib = data.library || []
         lib.forEach((d) => {
@@ -2092,6 +2463,7 @@
             wires: d.wires || [],
             inputs: d.inputs || [],
             outputs: d.outputs || [],
+            parameters: d.parameters || {},
           })
         })
         const list = data.main?.components || []
@@ -2106,6 +2478,9 @@
             props
           )
           comp.id = c.id || comp.id
+          if ((c.type === 'RAM' || c.type === 'ROM') && Array.isArray(c.memory)) {
+            comp.memory = Uint8Array.from(c.memory)
+          }
           configureComponent(comp)
           components.push(comp)
         })
@@ -2120,17 +2495,20 @@
           if (!fromPort || !toPort) return
           const bitWidth = w.bitWidth || fromPort.bitWidth
           if (fromPort.bitWidth !== toPort.bitWidth) return
-          wires.push(
-            new Wire({
-              id: w.id,
-              fromCompId: fromComp.id,
-              fromPortId: fromPort.id,
-              toCompId: toComp.id,
-              toPortId: toPort.id,
-              bitWidth,
-              showFlow: !!w.showFlow,
-            })
-          )
+          const wireObj = new Wire({
+            id: w.id,
+            fromCompId: fromComp.id,
+            fromPortId: fromPort.id,
+            toCompId: toComp.id,
+            toPortId: toPort.id,
+            bitWidth,
+            showFlow: !!w.showFlow,
+            netName: w.netName || null,
+            path: w.path || null,
+            pathIsGrid: !!w.pathIsGrid,
+          })
+          if (!wireObj.path) applyAutoRoute(wireObj)
+          wires.push(wireObj)
         })
         seedInitialEvents()
         processEventsUntil(simTime)
@@ -2152,6 +2530,7 @@
         probes.clear()
         selectedComponents = []
         resetSimulationClock()
+        drcFindings = []
         seedInitialEvents()
       }
 
@@ -2490,6 +2869,7 @@
             draggingComp.gx = draggingComp.initialPos.gx
             draggingComp.gy = draggingComp.initialPos.gy
           }
+          rerouteForComponent(draggingComp)
         }
 
         mode = 'IDLE'
@@ -2517,6 +2897,15 @@
             label: wireHit.showFlow ? 'Hide flow' : 'Show flow',
             action: () => {
               wireHit.showFlow = !wireHit.showFlow
+            },
+          })
+          items.push({
+            label: 'Set net name',
+            action: () => {
+              const next = prompt('Net name', wireHit.netName || '')
+              if (next !== null) {
+                wireHit.netName = next.trim() || null
+              }
             },
           })
         }
@@ -2549,6 +2938,12 @@
                   configureComponent(compHit)
                 }
               },
+            })
+          }
+          if (compHit.type === 'RAM' || compHit.type === 'ROM') {
+            items.push({
+              label: 'Hex Editor',
+              action: () => openHexEditor(compHit),
             })
           }
           items.push({
@@ -2597,12 +2992,29 @@
             bitWidth: w.bitWidth,
             value: w.value,
             showFlow: !!w.showFlow,
+            netName: w.netName || null,
           })),
         toggleWireFlow: (id, enable) => {
           const wire = wires.find((w) => w.id === id)
           if (!wire) return false
           wire.showFlow = enable === undefined ? !wire.showFlow : Boolean(enable)
           return true
+        },
+        setNetName: (id, name) => {
+          const wire = wires.find((w) => w.id === id)
+          if (!wire) return false
+          wire.netName = name ? String(name) : null
+          return true
+        },
+        getNetName: (id) => wires.find((w) => w.id === id)?.netName || null,
+        listNets: () => {
+          const nets = new Map()
+          wires.forEach((w) => {
+            if (!w.netName) return
+            if (!nets.has(w.netName)) nets.set(w.netName, [])
+            nets.get(w.netName).push(w.id)
+          })
+          return Array.from(nets.entries()).map(([name, ids]) => ({ name, wires: ids }))
         },
         setSpeed: (hz) => setTickRate(hz),
         pause: () => pauseSimulation(),
@@ -2623,6 +3035,38 @@
         exportVerilog: (moduleName) => exportVerilog(moduleName),
         reset: () => {
           clearAllState()
+        },
+        runDRC: () => runDRC(),
+        autoRouteAll: () => {
+          wires.forEach((w) => applyAutoRoute(w))
+          return true
+        },
+        loadMemory: (id, data) => {
+          const comp = components.find((c) => c.id === id)
+          if (!comp) return false
+          const mem = ensureMemory(comp)
+          if (Array.isArray(data) || data instanceof Uint8Array) {
+            mem.fill(0)
+            mem.set(
+              Array.from(data)
+                .map((v) => Number(v) & BYTE_MASK)
+                .slice(0, mem.length)
+            )
+            queueComponent(comp, 0)
+            return true
+          }
+          return false
+        },
+        dumpMemory: (id) => {
+          const comp = components.find((c) => c.id === id)
+          if (!comp) return []
+          return Array.from(ensureMemory(comp) || [])
+        },
+        openHexEditor: (id) => {
+          const comp = components.find((c) => c.id === id)
+          if (!comp) return false
+          openHexEditor(comp)
+          return true
         },
       }
 
