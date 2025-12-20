@@ -284,6 +284,17 @@ test.describe('Discrete tick simulation', () => {
     expect(pixelSum).toBeGreaterThan(CROSSHAIR_PIXEL_THRESHOLD)
   })
 
+  test('mode switch limits palette to basics in easy and restores in pro', async ({
+    page,
+  }) => {
+    await gotoApp(page)
+    await expect(page.locator('#hud button:has-text("RAM")')).toBeVisible()
+    await page.getByRole('button', { name: 'Easy' }).click()
+    await expect(page.locator('#hud button:has-text("RAM")')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Pro' }).click()
+    await expect(page.locator('#hud button:has-text("RAM")')).toBeVisible()
+  })
+
   test('memory primitives support load/save and runtime writes', async ({ page }) => {
     await gotoApp(page)
     await page.evaluate(() => {

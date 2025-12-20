@@ -128,6 +128,9 @@ const canvas = document.getElementById('canvas')
       const downloadBtn = document.getElementById('download-json')
       const applyLoadBtn = document.getElementById('apply-load')
       const ctxMenu = document.getElementById('ctx-menu')
+      const modeToggle = document.getElementById('mode-toggle')
+      const easyModeBtn = document.getElementById('btn-mode-easy')
+      const proModeBtn = document.getElementById('btn-mode-pro')
       const spotlightBackdrop = document.getElementById('spotlight-backdrop')
       const spotlightInput = document.getElementById('spotlight-input')
       const spotlightResults = document.getElementById('spotlight-results')
@@ -164,6 +167,19 @@ const canvas = document.getElementById('canvas')
         select: 's',
       }
 
+      // Basic gates available when Easy mode is active.
+      const BASIC_TOOL_KEYS = new Set([
+        'INPUT',
+        'OUTPUT',
+        'NOT',
+        'AND',
+        'NAND',
+        'OR',
+        'NOR',
+        'XOR',
+        'XNOR',
+      ])
+      let proMode = true
       let components = []
       let wires = []
       const mainContext = {
@@ -298,6 +314,17 @@ const canvas = document.getElementById('canvas')
           zoom: viewScale,
           camera: { x: camera.x, y: camera.y },
         }
+      }
+
+      // Returns true if a tool should be available in the current mode.
+      function toolEnabled(key) {
+        return proMode || BASIC_TOOL_KEYS.has(key) || !!customLibrary[key]
+      }
+
+      function setMode(isPro) {
+        proMode = !!isPro
+        updateModeButtons()
+        refreshHUD()
       }
 
       function loadShortcuts() {
@@ -2296,7 +2323,7 @@ const canvas = document.getElementById('canvas')
         const halfDot = SPOTLIGHT_DOT_SIZE / 2
         ctx.save()
         ctx.globalAlpha = 0.85
-        ctx.strokeStyle = '#22d3ee'
+        ctx.strokeStyle = '#00ffff'
         ctx.lineWidth = 1
         ctx.setLineDash([4, 4])
         ctx.strokeRect(x + 2, y + 2, GRID_SIZE - 4, GRID_SIZE - 4)
@@ -2307,7 +2334,7 @@ const canvas = document.getElementById('canvas')
         ctx.moveTo(cx, cy - arm)
         ctx.lineTo(cx, cy + arm)
         ctx.stroke()
-        ctx.fillStyle = '#22d3ee'
+        ctx.fillStyle = '#00ffff'
         ctx.fillRect(cx - halfDot, cy - halfDot, SPOTLIGHT_DOT_SIZE, SPOTLIGHT_DOT_SIZE)
         ctx.restore()
       }
@@ -2832,6 +2859,7 @@ const canvas = document.getElementById('canvas')
         hud.appendChild(sep)
 
         Object.keys(TOOLS).forEach((key) => {
+          if (!toolEnabled(key)) return
           if (customLibrary[key]) return
           const def = TOOLS[key]
           const btn = document.createElement('button')
@@ -4066,6 +4094,17 @@ const canvas = document.getElementById('canvas')
         ctxMenu.innerHTML = ''
       }
 
+      function updateModeButtons() {
+        if (!easyModeBtn || !proModeBtn) return
+        if (proMode) {
+          proModeBtn.classList.add('active')
+          easyModeBtn.classList.remove('active')
+        } else {
+          easyModeBtn.classList.add('active')
+          proModeBtn.classList.remove('active')
+        }
+      }
+
       function showContextMenu(x, y, items) {
         ctxMenu.innerHTML = ''
         items.forEach((item) => {
@@ -4204,6 +4243,13 @@ const canvas = document.getElementById('canvas')
         applyLoadBtn.addEventListener('click', handleLoad)
       }
 
+      function initModeToggle() {
+        if (!easyModeBtn || !proModeBtn) return
+        easyModeBtn.addEventListener('click', () => setMode(false))
+        proModeBtn.addEventListener('click', () => setMode(true))
+        updateModeButtons()
+      }
+
       function getSpotlightTargetGrid() {
         return {
           x: Math.round((canvas.width / (2 * viewScale) - camera.x) / GRID_SIZE),
@@ -4215,6 +4261,7 @@ const canvas = document.getElementById('canvas')
         const items = []
         const centerGrid = getSpotlightTargetGrid()
         Object.keys(TOOLS).forEach((type) => {
+          if (!toolEnabled(type)) return
           items.push({
             id: `create-${type}`,
             label: `Create ${type}`,
@@ -4880,6 +4927,7 @@ const canvas = document.getElementById('canvas')
       function init() {
         canvas.width = window.innerWidth
         canvas.height = window.innerHeight
+        initModeToggle()
         refreshHUD()
         initModalEvents()
         pushHistoryState('init')
