@@ -29,7 +29,8 @@ function parseArgs(argv) {
     if (arg === '--ticks') {
       const next = argv[i + 1]
       i++
-      args.ticks = Number.parseInt(next, 10) || 0
+      const parsed = Number.parseInt(next, 10)
+      args.ticks = Number.isNaN(parsed) ? 0 : parsed
     } else if (!args.file) {
       args.file = arg
     }
