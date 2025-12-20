@@ -525,6 +525,7 @@
       let viewScale = 1
       let minimapDragging = false
       let spotlightOpen = false
+      let shortcutOpen = false
       let lastPointerScene = { x: 0, y: 0 }
       let coverageEnabled = false
       const coverageStats = new Map()
@@ -631,7 +632,7 @@
           const raw = localStorage.getItem('oc_shortcuts')
           if (raw) {
             const parsed = JSON.parse(raw)
-            return { ...DEFAULT_SHORTCUTS, ...parsed }
+            return sanitizeShortcutMap(parsed)
           }
         } catch (err) {
           console.warn('Shortcut load failed', err)
@@ -640,7 +641,8 @@
       }
 
       function persistShortcuts(next) {
-        shortcutMap = { ...DEFAULT_SHORTCUTS, ...next }
+        const cleaned = sanitizeShortcutMap(next)
+        shortcutMap = cleaned
         shortcutBuffer = { ...shortcutMap }
         try {
           localStorage.setItem('oc_shortcuts', JSON.stringify(shortcutMap))
@@ -651,10 +653,27 @@
 
       function normalizeKeyBinding(key) {
         if (!key) return ''
-        const k = key.toString().trim().toLowerCase()
-        if (k === ' ') return 'space'
-        if (k === 'del') return 'delete'
-        return k
+        const raw = key.toString().trim().toLowerCase()
+        const parts = raw.split('+').filter(Boolean)
+        const k = (parts[parts.length - 1] || '').trim()
+        if (!k) return ''
+        if (k === ' ' || k === 'space') return 'space'
+        if (k === 'del' || k === 'delete') return 'delete'
+        if (k === 'backspace') return 'backspace'
+        const allowed = ['enter', 'tab', 'escape']
+        if (allowed.includes(k)) return k
+        return k.length === 1 ? k : ''
+      }
+
+      function sanitizeShortcutMap(map) {
+        const next = { ...DEFAULT_SHORTCUTS }
+        if (map && typeof map === 'object') {
+          Object.keys(DEFAULT_SHORTCUTS).forEach((action) => {
+            const val = normalizeKeyBinding(map[action])
+            if (val) next[action] = val
+          })
+        }
+        return next
       }
 
       function findShortcutAction(key) {
@@ -2135,10 +2154,10 @@
         const toggled = (wire.frameToggles || 0) > 1
 
         if (coverageEnabled) {
-          coverageStats.set(
-            wire.id,
-            (coverageStats.get(wire.id) || 0) + (wire.frameToggles || 0)
-          )
+          const delta = wire.frameToggles || 0
+          if (delta > 0 || !coverageStats.has(wire.id)) {
+            coverageStats.set(wire.id, (coverageStats.get(wire.id) || 0) + delta)
+          }
         }
 
         const coverageHits = coverageStats.get(wire.id) || 0
@@ -4606,11 +4625,13 @@
         shortcutBuffer = { ...shortcutMap }
         renderShortcutModal()
         shortcutBackdrop.classList.remove('hidden')
+        shortcutOpen = true
       }
 
       function closeShortcutModal() {
         persistShortcuts(shortcutBuffer)
         shortcutBackdrop.classList.add('hidden')
+        shortcutOpen = false
       }
 
       function renderShortcutModal() {
@@ -4913,7 +4934,6 @@
       })
 
       canvas.addEventListener('dblclick', handleDoubleClick)
-      window.addEventListener('contextmenu', (e) => e.preventDefault())
 
       function handleShortcutAction(action) {
         switch (action) {
@@ -4959,7 +4979,7 @@
           return
         }
         if (spotlightOpen) return
-        if (!shortcutBackdrop.classList.contains('hidden')) return
+        if (shortcutOpen) return
         const tag = (e.target?.tagName || '').toLowerCase()
         if (
           tag === 'input' ||
