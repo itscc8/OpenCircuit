@@ -372,6 +372,8 @@
       const MAX_DRC_DISPLAY_COUNT = 5
       const BYTE_MASK = 0xff
       const BYTE_MASK_BIG = 0xffn
+      const SAFE_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+      const ASM_ERROR_PREVIEW_CHARS = 120
 
       let components = []
       let wires = []
@@ -1319,15 +1321,25 @@
         const inIds = new Set(comp.inputs.map((p) => p.id))
         const outIds = new Set(comp.outputs.map((p) => p.id))
         wires = wires.filter((w) => {
-          let keep = true
-          if (w.toCompId === comp.id && !inIds.has(w.toPortId)) keep = false
-          if (w.fromCompId === comp.id && !outIds.has(w.fromPortId)) keep = false
+          if (w.toCompId === comp.id && !inIds.has(w.toPortId)) {
+            if (w.bundle) removeWireFromBundle(w.id)
+            return false
+          }
+          if (w.fromCompId === comp.id && !outIds.has(w.fromPortId)) {
+            if (w.bundle) removeWireFromBundle(w.id)
+            return false
+          }
           const fromPort = getPort(w.fromCompId, w.fromPortId)
           const toPort = getPort(w.toCompId, w.toPortId)
-          if (!fromPort || !toPort) keep = false
-          if (keep && fromPort.bitWidth !== toPort.bitWidth) keep = false
-          if (!keep && w.bundle) removeWireFromBundle(w.id)
-          return keep
+          if (!fromPort || !toPort) {
+            if (w.bundle) removeWireFromBundle(w.id)
+            return false
+          }
+          if (fromPort.bitWidth !== toPort.bitWidth) {
+            if (w.bundle) removeWireFromBundle(w.id)
+            return false
+          }
+          return true
         })
       }
 
@@ -1651,6 +1663,7 @@
 
       function resumeSimulation() {
         isPaused = false
+        lastBreakpointHit = null
         refreshHUD()
       }
 
@@ -1663,7 +1676,7 @@
         const prev = isPaused
         isPaused = true
         tick(count)
-        isPaused = lastBreakpointHit ? true : prev
+        isPaused = !!lastBreakpointHit || prev
       }
 
       function normalizeTestbenchSequence(input) {
@@ -2803,10 +2816,139 @@
         if (!expr) return false
         const scope = buildSignalScope(extra)
         try {
-          return Boolean(Function('scope', `with(scope){ return ${expr}; }`)(scope))
+          const tokens = Array.from(new Set(expr.match(/[A-Za-z_][A-Za-z0-9_]*/g) || []))
+          let rewritten = expr
+          tokens.forEach((name) => {
+            const value = scope[sanitizeId(name)] ?? scope[name] ?? 0
+            const re = new RegExp(`\\b${name}\\b`, 'g')
+            rewritten = rewritten.replace(re, String(value))
+          })
+          if (!/^[\d\s()+\-*/%<>=!&|]+$/.test(rewritten)) return false
+          const val = evaluateNumericExpression(rewritten)
+          return Boolean(val)
         } catch (err) {
           return false
         }
+      }
+
+      function evaluateNumericExpression(expr) {
+        const tokens = expr.match(/(\d+|==|!=|>=|<=|&&|\|\||[()+\-*/%<>])/g)
+        if (!tokens || !tokens.length) return 0
+        const compact = expr.replace(/\s+/g, '')
+        if (tokens.join('') !== compact) return 0
+        let expectValue = true
+        let balance = 0
+        for (const t of tokens) {
+          if (t === '(') {
+            balance++
+            continue
+          }
+          if (t === ')') {
+            balance--
+            if (balance < 0 || expectValue) return 0
+            continue
+          }
+          if (/^\d+$/.test(t)) {
+            if (!expectValue) return 0
+            expectValue = false
+          } else {
+            if (expectValue) return 0
+            expectValue = true
+          }
+        }
+        if (balance !== 0 || expectValue) return 0
+        const prec = {
+          '||': 1,
+          '&&': 2,
+          '==': 3,
+          '!=': 3,
+          '>=': 4,
+          '<=': 4,
+          '>': 4,
+          '<': 4,
+          '+': 5,
+          '-': 5,
+          '*': 6,
+          '/': 6,
+          '%': 6,
+        }
+        const output = []
+        const ops = []
+        tokens.forEach((t) => {
+          if (/^\d+$/.test(t)) {
+            output.push(Number(t))
+          } else if (t === '(') {
+            ops.push(t)
+          } else if (t === ')') {
+            while (ops.length && ops[ops.length - 1] !== '(') {
+              output.push(ops.pop())
+            }
+            ops.pop()
+          } else {
+            while (
+              ops.length &&
+              ops[ops.length - 1] !== '(' &&
+              prec[ops[ops.length - 1]] >= prec[t]
+            ) {
+              output.push(ops.pop())
+            }
+            ops.push(t)
+          }
+        })
+        while (ops.length) output.push(ops.pop())
+        const stack = []
+        output.forEach((tok) => {
+          if (typeof tok === 'number') {
+            stack.push(tok)
+          } else {
+            const b = stack.pop() || 0
+            const a = stack.pop() || 0
+            switch (tok) {
+              case '+':
+                stack.push(a + b)
+                break
+              case '-':
+                stack.push(a - b)
+                break
+              case '*':
+                stack.push(a * b)
+                break
+              case '/':
+                stack.push(b === 0 ? 0 : Math.trunc(a / b))
+                break
+              case '%':
+                stack.push(b === 0 ? 0 : Math.trunc(a) % Math.trunc(b))
+                break
+              case '==':
+                stack.push(a === b ? 1 : 0)
+                break
+              case '!=':
+                stack.push(a !== b ? 1 : 0)
+                break
+              case '>':
+                stack.push(a > b ? 1 : 0)
+                break
+              case '<':
+                stack.push(a < b ? 1 : 0)
+                break
+              case '>=':
+                stack.push(a >= b ? 1 : 0)
+                break
+              case '<=':
+                stack.push(a <= b ? 1 : 0)
+                break
+              case '&&':
+                stack.push(a && b ? 1 : 0)
+                break
+              case '||':
+                stack.push(a || b ? 1 : 0)
+                break
+              default:
+                stack.push(0)
+            }
+          }
+        })
+        return stack.pop() || 0
       }
 
       function normalizeFsmDefinition(def) {
@@ -2909,7 +3051,7 @@
             isPaused = true
           }
         })
-        if (lastBreakpointHit) refreshHUD()
+        if (lastBreakpointHit && !document.hidden) refreshHUD()
       }
 
       function listBreakpoints() {
@@ -2936,8 +3078,13 @@
       function addWireToBundle(wireId, bundleName, width) {
         const wire = wires.find((w) => w.id === wireId)
         if (!wire) return false
-        const bundle = ensureBundle(bundleName, width || wire.bitWidth)
+        const targetWidth = width || wire.bitWidth
+        const bundle = ensureBundle(bundleName, targetWidth)
         if (!bundle) return false
+        const fromPort = getPort(wire.fromCompId, wire.fromPortId)
+        const toPort = getPort(wire.toCompId, wire.toPortId)
+        if (!fromPort || !toPort) return false
+        if (fromPort.bitWidth !== bundle.width || toPort.bitWidth !== bundle.width) return false
         wire.bundle = bundle.name
         wire.bitWidth = bundle.width
         wire.netName = wire.netName || bundle.name
@@ -2994,7 +3141,7 @@
         return []
       }
 
-      function parseNumberLike(val) {
+      function parseByteValue(val) {
         if (typeof val === 'number') return val & BYTE_MASK
         const s = String(val || '0').trim()
         if (/^0x/i.test(s)) return parseInt(s, 16) & BYTE_MASK
@@ -3007,26 +3154,27 @@
         if (typeof def.encode === 'function') {
           const res = def.encode(match) ?? []
           const arr = Array.isArray(res) ? res : [res]
-          return arr.map((v) => parseNumberLike(v))
+          return arr.map((v) => parseByteValue(v))
         }
-        if (typeof def.encode === 'number') return [parseNumberLike(def.encode)]
+        if (typeof def.encode === 'number') return [parseByteValue(def.encode)]
         const tpl = String(def.encode || '')
         if (!tpl.includes('${')) {
           return tpl
             .split(',')
             .map((p) => p.trim())
             .filter(Boolean)
-            .map((p) => parseNumberLike(p))
+            .map((p) => parseByteValue(p))
         }
         const replaced = tpl.replace(/\$\{([^}]+)\}/g, (_, name) => {
+          if (!SAFE_IDENTIFIER_RE.test(name)) return '0'
           const raw = match?.groups?.[name] ?? ''
-          return parseNumberLike(raw)
+          return String(parseByteValue(raw))
         })
         return replaced
           .split(',')
           .map((p) => p.trim())
           .filter(Boolean)
-          .map((p) => parseNumberLike(p))
+          .map((p) => parseByteValue(p))
       }
 
       function assembleSource(defs, source) {
@@ -3035,11 +3183,19 @@
         const bytes = []
         src
           .split('\n')
-          .map((l) => l.replace(/[#;].*$/, '').trim())
+          .map((l) => {
+            const idx = l.search(/[#;]/)
+            if (idx === -1) return l.trim()
+            if (idx > 0 && l[idx - 1] === '\\') return l.trim()
+            return l.slice(0, idx).trim()
+          })
           .filter(Boolean)
           .forEach((line) => {
             const def = isa.find((d) => d.regex.test(line))
-            if (!def) throw new Error(`No rule for line: ${line}`)
+            if (!def) {
+              const safeLine = String(line || '').slice(0, ASM_ERROR_PREVIEW_CHARS)
+              throw new Error(`No rule for line: ${safeLine}`)
+            }
             const match = line.match(def.regex)
             bytes.push(...encodeInstruction(def, match))
           })
