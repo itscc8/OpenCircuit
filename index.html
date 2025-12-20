@@ -575,7 +575,7 @@
         const warnings = []
         const driverMap = new Map()
         wires.forEach((w) => {
-          const netKey = w.netName || `${w.toCompId}:${w.toPortId}`
+          const netKey = w.netName ? `net:${w.netName}` : `wire:${w.id}`
           const srcKey = `${w.fromCompId}:${w.fromPortId}`
           if (!driverMap.has(netKey)) driverMap.set(netKey, new Set())
           driverMap.get(netKey).add(srcKey)
@@ -591,10 +591,10 @@
         })
 
         driverMap.forEach((drivers, key) => {
-          if (drivers.size > 1) {
+          if (key.startsWith('net:') && drivers.size > 1) {
             warnings.push({
               type: 'short_circuit',
-              message: `Multiple drivers detected on ${key}`,
+              message: `Multiple drivers detected on ${key.slice(4)}`,
               location: key,
             })
           }
@@ -1106,10 +1106,8 @@
           return clampBits(value(params))
         }
         if (typeof value === 'string') {
-          const key = value.startsWith('$') ? value.slice(1) : value
-          if (params[key] !== undefined) {
-            return clampBits(params[key])
-          }
+          const key = value.startsWith('$') ? value.slice(1) : null
+          if (key && params[key] !== undefined) return clampBits(params[key])
           const asNum = Number(value)
           if (Number.isFinite(asNum)) return clampBits(asNum)
         }
@@ -1615,17 +1613,6 @@
 
       function wireColor(wire) {
         return wire.bitWidth > 7 ? '#f97316' : '#3b82f6'
-      }
-
-      function computeOrthogonalPath(start, end) {
-        // simple Manhattan route avoiding diagonal segments
-        const midX = start.x
-        const midY = end.y
-        return [
-          { x: start.x, y: start.y },
-          { x: midX, y: midY },
-          { x: end.x, y: end.y },
-        ]
       }
 
       function applyAutoRoute(wire) {
